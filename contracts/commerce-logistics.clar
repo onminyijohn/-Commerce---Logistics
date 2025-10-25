@@ -163,6 +163,41 @@
     )
 )
 
+(define-public (renew-subscription (subscription-id uint) (duration-blocks uint))
+    (let
+        (
+            (subscription-data (map-get? subscriptions subscription-id))
+        )
+        (asserts! (is-some subscription-data) ERR_NOT_FOUND)
+        (let
+            (
+                (subscription (unwrap-panic subscription-data))
+                (subscriber (get subscriber subscription))
+                (publisher (get publisher subscription))
+                (amount (get amount subscription))
+                (is-active (get is-active subscription))
+                (end-block (get end-block subscription))
+            )
+            (asserts! (is-eq subscriber tx-sender) ERR_UNAUTHORIZED)
+            (asserts! is-active ERR_NOT_FOUND)
+            (asserts! (>= amount MIN_SUBSCRIPTION_AMOUNT) ERR_INVALID_AMOUNT)
+            
+            (match (stx-transfer? amount tx-sender (as-contract tx-sender))
+                success
+                    (begin
+                        (map-set subscriptions subscription-id
+                            (merge subscription { end-block: (+ end-block duration-blocks) })
+                        )
+                        
+                        (var-set total-locked-amount (+ (var-get total-locked-amount) amount))
+                        (ok true)
+                    )
+                error ERR_INSUFFICIENT_BALANCE
+            )
+        )
+    )
+)
+
 (define-public (claim-epoch-payout)
     (let
         (

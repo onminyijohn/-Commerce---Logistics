@@ -6,6 +6,7 @@
 (define-constant ERR_INVALID_AMOUNT (err u402))
 (define-constant ERR_SUBSCRIPTION_EXPIRED (err u403))
 (define-constant ERR_INVALID_PUBLISHER (err u405))
+(define-constant ERR_INVALID_TIER (err u406))
 
 (define-constant EPOCH_BLOCKS u144)
 (define-constant MIN_SUBSCRIPTION_AMOUNT u1000000)
@@ -22,7 +23,8 @@
         amount: uint,
         start-block: uint,
         end-block: uint,
-        is-active: bool
+        is-active: bool,
+        tier-id: (optional uint)
     }
 )
 
@@ -48,6 +50,20 @@
 
 (define-map epoch-payouts
     { epoch: uint, publisher: principal }
+    uint
+)
+
+(define-map publisher-tiers
+    { publisher: principal, tier-id: uint }
+    {
+        tier-name: (string-utf8 50),
+        price: uint,
+        is-active: bool
+    }
+)
+
+(define-map publisher-tier-count
+    principal
     uint
 )
 
@@ -90,7 +106,8 @@
                             amount: amount,
                             start-block: current-block,
                             end-block: end-block,
-                            is-active: true
+                            is-active: true,
+                            tier-id: none
                         }
                     )
                     
@@ -282,4 +299,114 @@
 
 (define-read-only (get-epoch-payout (epoch uint) (publisher principal))
     (map-get? epoch-payouts { epoch: epoch, publisher: publisher })
+)
+
+(define-public (create-subscription-tier (tier-name (string-utf8 50)) (price uint))
+    (let
+        (
+            (publisher-data (map-get? publisher-info tx-sender))
+            (current-tier-count (default-to u0 (map-get? publisher-tier-count tx-sender)))
+            (new-tier-id (+ current-tier-count u1))
+        )
+        (asserts! (is-some publisher-data) ERR_INVALID_PUBLISHER)
+        (asserts! (get is-registered (unwrap-panic publisher-data)) ERR_INVALID_PUBLISHER)
+        (asserts! (>= price MIN_SUBSCRIPTION_AMOUNT) ERR_INVALID_AMOUNT)
+        
+        (map-set publisher-tiers { publisher: tx-sender, tier-id: new-tier-id }
+            {
+                tier-name: tier-name,
+                price: price,
+                is-active: true
+            }
+        )
+        (map-set publisher-tier-count tx-sender new-tier-id)
+        (ok new-tier-id)
+    )
+)
+
+(define-public (subscribe-to-tier (publisher principal) (tier-id uint) (duration-blocks uint))
+    (let
+        (
+            (subscription-id (var-get next-subscription-id))
+            (publisher-data (map-get? publisher-info publisher))
+            (tier-data (map-get? publisher-tiers { publisher: publisher, tier-id: tier-id }))
+            (current-block burn-block-height)
+        )
+        (asserts! (is-some publisher-data) ERR_INVALID_PUBLISHER)
+        (asserts! (get is-registered (unwrap-panic publisher-data)) ERR_INVALID_PUBLISHER)
+        (asserts! (is-some tier-data) ERR_INVALID_TIER)
+        (asserts! (get is-active (unwrap-panic tier-data)) ERR_INVALID_TIER)
+        
+        (let
+            (
+                (tier (unwrap-panic tier-data))
+                (amount (get price tier))
+                (end-block (+ current-block duration-blocks))
+            )
+            (match (stx-transfer? amount tx-sender (as-contract tx-sender))
+                success
+                    (begin
+                        (map-set subscriptions subscription-id
+                            {
+                                subscriber: tx-sender,
+                                publisher: publisher,
+                                amount: amount,
+                                start-block: current-block,
+                                end-block: end-block,
+                                is-active: true,
+                                tier-id: (some tier-id)
+                            }
+                        )
+                        
+                        (map-set subscriber-subscriptions tx-sender
+                            (unwrap-panic (as-max-len? 
+                                (append (default-to (list) (map-get? subscriber-subscriptions tx-sender)) subscription-id) 
+                                u50))
+                        )
+                        
+                        (map-set publisher-subscribers publisher
+                            (unwrap-panic (as-max-len? 
+                                (append (default-to (list) (map-get? publisher-subscribers publisher)) subscription-id) 
+                                u100))
+                        )
+                        
+                        (map-set publisher-info publisher
+                            (merge (unwrap-panic publisher-data) 
+                                { active-subscriptions: (+ (get active-subscriptions (unwrap-panic publisher-data)) u1) })
+                        )
+                        
+                        (var-set next-subscription-id (+ subscription-id u1))
+                        (var-set total-locked-amount (+ (var-get total-locked-amount) amount))
+                        (ok subscription-id)
+                    )
+                error ERR_INSUFFICIENT_BALANCE
+            )
+        )
+    )
+)
+
+(define-public (toggle-tier-status (tier-id uint))
+    (let
+        (
+            (tier-data (map-get? publisher-tiers { publisher: tx-sender, tier-id: tier-id }))
+        )
+        (asserts! (is-some tier-data) ERR_NOT_FOUND)
+        (let
+            (
+                (tier (unwrap-panic tier-data))
+            )
+            (map-set publisher-tiers { publisher: tx-sender, tier-id: tier-id }
+                (merge tier { is-active: (not (get is-active tier)) })
+            )
+            (ok true)
+        )
+    )
+)
+
+(define-read-only (get-publisher-tier (publisher principal) (tier-id uint))
+    (map-get? publisher-tiers { publisher: publisher, tier-id: tier-id })
+)
+
+(define-read-only (get-publisher-tier-count (publisher principal))
+    (default-to u0 (map-get? publisher-tier-count publisher))
 )

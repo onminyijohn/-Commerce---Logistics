@@ -410,3 +410,52 @@
 (define-read-only (get-publisher-tier-count (publisher principal))
     (default-to u0 (map-get? publisher-tier-count publisher))
 )
+
+(define-read-only (accumulate-active-subscription
+    (subscription-id uint)
+    (acc (list 50
+        {
+            subscription-id: uint,
+            subscriber: principal,
+            publisher: principal,
+            amount: uint,
+            start-block: uint,
+            end-block: uint,
+            is-active: bool,
+            tier-id: (optional uint)
+        }
+    ))
+)
+    (match (map-get? subscriptions subscription-id)
+        subscription
+            (if (and (get is-active subscription)
+                     (< burn-block-height (get end-block subscription)))
+                (unwrap-panic (as-max-len?
+                    (append acc
+                        {
+                            subscription-id: subscription-id,
+                            subscriber: (get subscriber subscription),
+                            publisher: (get publisher subscription),
+                            amount: (get amount subscription),
+                            start-block: (get start-block subscription),
+                            end-block: (get end-block subscription),
+                            is-active: (get is-active subscription),
+                            tier-id: (get tier-id subscription)
+                        }
+                    )
+                    u50
+                ))
+                acc
+            )
+        acc
+    )
+)
+
+(define-read-only (get-subscriber-active-subscriptions-detailed (subscriber principal))
+    (let
+        (
+            (subscription-ids (default-to (list) (map-get? subscriber-subscriptions subscriber)))
+        )
+        (fold accumulate-active-subscription subscription-ids (list))
+    )
+)
